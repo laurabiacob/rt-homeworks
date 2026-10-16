@@ -1,5 +1,6 @@
 package ssatr.device;
 
+import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
 
 /**
@@ -17,9 +18,13 @@ public class SporadicAlarmTask implements Runnable {
 
     private final String deviceId;
     private final MqttConnection mqtt;
-    private final BlockingQueue<Double> alarmEvents;
+    private final BlockingQueue<AlarmEvent> alarmEvents;
 
-    public SporadicAlarmTask(String deviceId, MqttConnection mqtt, BlockingQueue<Double> alarmEvents) {
+    // momentul ultimei eliberări acceptate; inițial suficient de demult ca
+    // prima alarmă să fie mereu acceptată
+    private long lastRelease = -MIN_INTERARRIVAL_MS;
+
+    public SporadicAlarmTask(String deviceId, MqttConnection mqtt, BlockingQueue<AlarmEvent> alarmEvents) {
         this.deviceId = deviceId;
         this.mqtt = mqtt;
         this.alarmEvents = alarmEvents;
@@ -27,15 +32,31 @@ public class SporadicAlarmTask implements Runnable {
 
     @Override
     public void run() {
-        // TODO 2: implementați taskul sporadic:
-        //   - așteptați un eveniment: alarmEvents.take()
-        //   - dacă de la ultima eliberare au trecut mai puțin de
-        //     MIN_INTERARRIVAL_MS, respingeți evenimentul (afișați un mesaj)
-        //   - altfel publicați pe Config.alarmTopic(deviceId) mesajul
-        //     "deviceId;timestamp;temperatura;prag"
-        //     (pragul curent poate fi transmis împreună cu temperatura sau
-        //      citit din PeriodicTelemetryTask; alegeți și justificați în raport)
-        //
-        // Vezi exemplul exemple/01-taskuri/.../SporadicTaskExample.java
+        try {
+            while (true) {
+                AlarmEvent e = alarmEvents.take();   // așteaptă (blocat) următorul eveniment
+
+                // intervalul se măsoară între momentele de sosire ale evenimentelor
+                long sinceLast = e.time() - lastRelease;
+                if (sinceLast < MIN_INTERARRIVAL_MS) {
+                    System.out.printf(Locale.US,
+                            "[sporadic]  alarmă RESPINSĂ (%.2f > %.2f): au trecut doar %d ms (interval minim %d ms)%n",
+                            e.temperature(), e.threshold(), sinceLast, MIN_INTERARRIVAL_MS);
+                    continue;
+                }
+                lastRelease = e.time();
+
+                // pragul vine în eveniment: cel față de care taskul periodic a decis alarma
+                String message = deviceId + ";" + System.currentTimeMillis() + ";"
+                        + String.format(Locale.US, "%.2f;%.2f", e.temperature(), e.threshold());
+                mqtt.publish(Config.alarmTopic(deviceId), message);
+
+                long responseTime = System.currentTimeMillis() - e.time();
+                System.out.printf(Locale.US, "[sporadic]  ALARMĂ publicată: %.2f > %.2f  R = %d ms%n",
+                        e.temperature(), e.threshold(), responseTime);
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
