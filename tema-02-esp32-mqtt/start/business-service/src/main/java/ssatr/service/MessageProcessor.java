@@ -1,5 +1,6 @@
 package ssatr.service;
 
+import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
 
 /**
@@ -27,12 +28,58 @@ public class MessageProcessor implements Runnable {
 
     @Override
     public void run() {
-        // TODO 4: într-o buclă:
-        //   - preluați un mesaj: inbox.take()
-        //   - salvați mesajul în fișierul CSV: storage.append(kind, mesaj)
-        //     (CsvStorage este gata implementată)
-        //   - actualizați dashboard-ul, în funcție de kind
-        //   - alarmele și confirmările se afișează imediat în consolă
-        //   - un mesaj greșit (format invalid) nu trebuie să oprească thread-ul
+        try {
+            while (true) {
+                String message = inbox.take();
+
+                // mesajul se salvează exact cum a sosit, chiar dacă e greșit
+                storage.append(kind, message);
+
+                try {
+                    process(message);
+                } catch (RuntimeException e) {
+                    // un mesaj greșit nu oprește thread-ul
+                    System.out.println("Mesaj " + kind + " invalid (" + e.getMessage() + "): " + message);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void process(String message) {
+        // status: textul poate conține orice, deci împărțim în cel mult 3 câmpuri
+        String[] fields = message.split(";", kind.equals("status") ? 3 : -1);
+
+        switch (kind) {
+            case "telemetry": {
+                expectFields(fields, 3);
+                dashboard.updateTelemetry(fields[0], Double.parseDouble(fields[2]));
+                break;
+            }
+            case "alarm": {
+                expectFields(fields, 4);
+                double temperature = Double.parseDouble(fields[2]);
+                double threshold = Double.parseDouble(fields[3]);
+                dashboard.updateAlarm(fields[0]);
+                System.out.printf(Locale.US, "%n!!! ALARMĂ %s: temperatura %.2f depășește pragul %.2f%n",
+                        fields[0], temperature, threshold);
+                break;
+            }
+            case "status": {
+                expectFields(fields, 3);
+                dashboard.updateStatus(fields[0], fields[2]);
+                System.out.printf("%n<<< %s: %s%n", fields[0], fields[2]);
+                break;
+            }
+            default:
+                throw new IllegalStateException("tip de mesaj necunoscut: " + kind);
+        }
+    }
+
+    private static void expectFields(String[] fields, int count) {
+        if (fields.length != count) {
+            throw new IllegalArgumentException("se așteaptă " + count + " câmpuri, sunt " + fields.length);
+        }
     }
 }
